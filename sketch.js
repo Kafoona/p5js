@@ -1,104 +1,179 @@
-let vars = [250, 250, 125, 125];
-var counter = 0;
-var currentTime = 0;
 
-let triOsc;
-let triEnv;
+let panelImg;
+const labels = ['Drive','Output','Cutoff','Resonance'];
+let splash = true;            // info splash overlay
+let calibrationStep = 0;      // counts 0…4
+let knobCenters = [];         // will hold {x,y} for each knob
+let knobImgs = [];            // the cropped knob images
+let knobAngles = [0,0,0,0];
+let knobOffsets = [0,0,0,0];
+let draggingKnob = -1;
 
-let tempo = 0;
-let tempoSlider;
-let button, mySelect;
-let randFreq = 100;
+const knobW       = 150;
+const marginSmall = 30;       // for Drive, Output, Resonance
+const marginLarge = 80;       // for Cutoff
+let knobDs        = [];       // actual crop size per knob
+let knobMs        = [];       // margin per knob
 
-let sets = [
-  [300, 400, 500, 600],
-  [300, 450, 500, 675]
-];
+// — Audio Nodes —
+let osc, filterLP, driveFX, outputGain;
 
-let oscs = [];
-let envs = [];
-let index = 0;
-let lastTime = 0;
+function preload(){
+  panelImg = loadImage('Moog ladder filter module.webp');
+}
 
-let lastChordChange = 0; // Timer for chord (set) change
-let currentSet = 0;
+// — Random-pitch scheduler —
+function scheduleRandomPitch() {
 
-function setup() {
-  createCanvas(700, 700);
-  background(0);
-  
-  // GUI objects
-  tempoSlider = createSlider(0, 300);
-  tempoSlider.position(30, 30);
-  
-  button = createButton("random frequency");
-  button.position(30, 60);
-  button.mousePressed(doTheThing);
-  
-  fill(255);
-  text("TEMPO", 170, 45);
-  
-  mySelect = createSelect();
-  mySelect.position(30, 90);
-  mySelect.option('triangle');
-  mySelect.option('square');
-  
-  // First pattern oscillator & envelope
-  triOsc = new p5.Oscillator('triangle');
-  triOsc.freq(300);
-  triOsc.amp(0);
-  triOsc.start();
-  
-  triEnv = new p5.Envelope(0.01, 0.9, 0.1, 0);
-  
-  // Second pattern oscillators & envelopes
-  for (let i = 0; i < sets[0].length; i++) {
-    let osc = new p5.Oscillator('triangle');
-    osc.freq(sets[0][i]);
-    osc.amp(0);
-    osc.start();
-    oscs.push(osc);
-    
-    let env = new p5.Envelope(1.0, 0.1, 2, 2);
-    envs.push(env);
+  let newFreq = random(200, 1200);
+
+  let glide   = random(0.1, 0.5);
+
+  osc.freq(newFreq, glide);
+  // schedule next change after 500–1500 ms
+  setTimeout(scheduleRandomPitch, random(200, 1500));
+}
+
+function setup(){
+  createCanvas(panelImg.width, panelImg.height);
+  textFont('monospace');
+  textAlign(CENTER, CENTER);
+  imageMode(CORNER);
+
+  // Audio setup
+  osc        = new p5.Oscillator('sawtooth');
+  filterLP   = new p5.LowPass();
+  driveFX    = new p5.Distortion();
+  outputGain = new p5.Gain();
+
+  // start oscillator
+  osc.start();
+  // begin wandering pitch
+  scheduleRandomPitch();
+
+  // route osc → filter → drive → gain → master
+  osc.disconnect();
+  osc.connect(filterLP);
+  filterLP.disconnect();
+  driveFX.process(filterLP, 0, '4x');
+  driveFX.connect(outputGain);
+  outputGain.connect();
+}
+
+function draw(){
+  background(30);
+  image(panelImg, 0, 0);
+
+  // 1) Show splash overlay
+  if (splash){
+    noStroke();
+    fill(0, 200);
+    rect(0, 0, width, height);
+    fill(255);
+    textSize(35);
+    text("Moog Synth Panel\nClick the center of Drive, Output, Cutoff, and\nResonance knobs to calibrate", width/2, height/2);
+    return;
+  }
+
+  // 2) Calibration mode
+  if (calibrationStep < 4){
+    fill(255);
+    textSize(20);
+    text(`Click the CENTER of the ${labels[calibrationStep]} knob`, width/2, 30);
+    stroke(255,0,0);
+    line(mouseX-10, mouseY, mouseX+10, mouseY);
+    line(mouseX, mouseY-10, mouseX, mouseY+10);
+    noStroke();
+    return;
+  }
+
+  // 3) Crop each knob once using per-knob margins
+  if (knobImgs.length === 0){
+    for (let i = 0; i < knobCenters.length; i++){
+      let m = (i === 2 ? marginLarge : marginSmall);
+      let d = knobW + m*2;
+      knobMs[i] = m;
+      knobDs[i] = d;
+      let c = knobCenters[i];
+      knobImgs[i] = panelImg.get(
+        c.x - d/2,
+        c.y - d/2,
+        d, d
+      );
+    }
+  }
+
+  // 4) Draw & update each knob
+  for (let i = 0; i < knobCenters.length; i++){
+    let { x, y } = knobCenters[i];
+    let d = knobDs[i];
+
+    // update rotation if dragging
+    if (draggingKnob === i){
+      let a = atan2(mouseY - y, mouseX - x);
+      knobAngles[i] = constrain(a - knobOffsets[i], -0.75*PI, 0.75*PI);
+    }
+
+    // draw the rotated knob image
+    push();
+      translate(x, y);
+      rotate(knobAngles[i]);
+      imageMode(CENTER);
+      image(knobImgs[i], 0, 0, d, d);
+    pop();
+
+    // red marker at true knob radius (–knobW/2)
+    push();
+      translate(x, y);
+      rotate(knobAngles[i]);
+      stroke(255,0,0);
+      strokeWeight(3);
+      let markerY = -knobW/2;
+      line(0, markerY, 0, markerY + 15);
+      noStroke();
+    pop();
+  }
+
+  // 5) Map knobAngles → audio parameters
+  const norm = a => map(a, -0.75*PI, 0.75*PI, 0, 1, true);
+  let drvVal    = norm(knobAngles[0]) * 0.9;
+  let outVal    = norm(knobAngles[1]) * 1.0;
+  let cutoffVal = lerp(100, 15000, norm(knobAngles[2]));
+  let resVal    = lerp(0.1, 40, norm(knobAngles[3]));
+
+
+  let jit = map(noise(millis()*0.002), 0, 1, -10, 10);
+
+  driveFX.process(filterLP, drvVal, '4x');
+  outputGain.amp(outVal);
+  filterLP.freq(constrain(cutoffVal + jit, 100, 15000));
+  filterLP.res(resVal);
+}
+
+function mousePressed(){
+
+  if (splash){
+    splash = false;
+    return;
+  }
+
+  if (calibrationStep < labels.length){
+    knobCenters.push({ x: mouseX, y: mouseY });
+    calibrationStep++;
+    return;
+  }
+
+  for (let i = 0; i < knobCenters.length; i++){
+    let { x, y } = knobCenters[i];
+    if (dist(mouseX, mouseY, x, y) < knobDs[i]/2){
+      draggingKnob = i;
+      let a = atan2(mouseY - y, mouseX - x);
+      knobOffsets[i] = a - knobAngles[i];
+      break;
+    }
   }
 }
 
-function draw() {
-  tempo = tempoSlider.value();
-  console.log(mySelect.selected());
-  
-  if (millis() > currentTime + vars[counter] - tempo) {
-    currentTime = millis();
-    counter++;
-    triOsc.freq(randFreq);
-    triEnv.play(triOsc);
-    if (counter > 3) {
-      counter = 0;
-    }
-  }
-  
-  // Second musical pattern: note triggering (delay mapped from tempo)
-  let secondDelay = map(tempo, 0, 300, 300, 150);
-  if (millis() - lastTime > secondDelay) {
-    lastTime = millis();
-    envs[index].play(oscs[index]);
-    index = (index + 1) % oscs.length;
-  }
-  
-  // Chord set alternation based on tempo:
- 
-  let chordChangeDelay = map(tempo, 0, 300, 2600, 100);
-  if (millis() - lastChordChange > chordChangeDelay) {
-    lastChordChange = millis();
-    currentSet = (currentSet + 1) % sets.length;
-    for (let i = 0; i < oscs.length; i++) {
-      oscs[i].freq(sets[currentSet][i]);
-    }
-  }
-}
-
-function doTheThing() {
-  console.log("pressed");
-  randFreq = random(80, 400);
+function mouseReleased(){
+  draggingKnob = -1;
 }
